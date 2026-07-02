@@ -1,0 +1,33 @@
+[package]
+name = "markdownpreview"
+version = "0.1.0"
+authors = ["atomcode"]
+edition = "2021"
+description = "A fast, minimal markdown preview reader with live reload — a lightweight alternative to VS Code markdown plugins"
+license = "MIT"
+repository = "https://github.com/atomcode/markdownpreview"
+keywords = ["markdown", "preview", "live-reload", "reader"]
+categories = ["command-line-utilities", "rendering"]
+
+[dependencies]
+pulldown-cmark = "0.11"
+tiny_http = "0.12"
+notify = { version = "6", features = [] }
+clap = { version = "4", features = ["derive"] }
+open = "5"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+winapi = { version = "0.3", features = [
+    "shellapi", "winuser", "libloaderapi", "commctrl",
+    "minwindef", "windef", "winbase",
+] }
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"
+
+[profile.dev]
+opt-level = 0
