@@ -7,4 +7,5 @@ pub mod renderer;
 pub mod server;
 
 // Re-export the main public API
-pub use renderer::{render_content, render_full_page, render_landing_page};
+pub use renderer::render_content;
+pub use server::{FileEntry, FileMap, make_file_id, watch_file_id};

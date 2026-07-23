@@ -1,0 +1,744 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Markdown Preview</title>
+<style>
+:root {
+    --bg: __BG__;
+    --fg: __FG__;
+    --muted: __MUTED__;
+    --border: __BORDER__;
+    --accent: __ACCENT__;
+    --code-bg: __CODE_BG__;
+    --pre-bg: __PRE_BG__;
+    --table-hdr: __TABLE_HDR__;
+    --table-alt: __TABLE_ALT__;
+    --tab-bg: __TAB_BG__;
+    --tab-active-bg: __TAB_ACTIVE_BG__;
+    --tab-hover-bg: __TAB_HOVER_BG__;
+    --toolbar-bg: __TOOLBAR_BG__;
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+    font-family: -apple-system, "Segoe UI", "Noto Sans SC", "Microsoft YaHei", Helvetica, Arial, sans-serif;
+    font-size: 14px;
+    line-height: 1.7;
+    color: var(--fg);
+    background: var(--bg);
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+/* ── Toolbar ── */
+#toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    height: 40px;
+    padding: 0 10px;
+    background: var(--toolbar-bg);
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+    -webkit-app-region: drag;
+}
+
+#toolbar .left,
+#toolbar .right {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    -webkit-app-region: no-drag;
+}
+
+#toolbar button {
+    font-size: 12px;
+    font-family: inherit;
+    padding: 4px 10px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: transparent;
+    color: var(--muted);
+    cursor: pointer;
+    transition: all .15s;
+    white-space: nowrap;
+}
+
+#toolbar button:hover {
+    background: var(--tab-hover-bg);
+    color: var(--fg);
+}
+
+#toolbar .brand {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--fg);
+    margin-right: 8px;
+    letter-spacing: .3px;
+}
+
+#toolbar .brand .m-logo {
+    display: inline-block;
+    width: 18px; height: 18px;
+    background: var(--accent);
+    color: #fff;
+    text-align: center;
+    line-height: 18px;
+    border-radius: 3px;
+    font-size: 11px;
+    font-weight: 700;
+    margin-right: 4px;
+}
+
+#toolbar .links a {
+    font-size: 11px;
+    color: var(--muted);
+    text-decoration: none;
+    margin: 0 3px;
+}
+#toolbar .links a:hover { color: var(--accent); }
+
+/* ── Tab Bar ── */
+#tab-bar {
+    display: flex;
+    align-items: center;
+    height: 34px;
+    background: var(--toolbar-bg);
+    border-bottom: 1px solid var(--border);
+    overflow-x: auto;
+    overflow-y: hidden;
+    flex-shrink: 0;
+    scrollbar-width: thin;
+}
+#tab-bar::-webkit-scrollbar { height: 3px; }
+#tab-bar::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+.tab {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    padding: 5px 12px;
+    height: 100%;
+    font-size: 12px;
+    color: var(--muted);
+    border-right: 1px solid var(--border);
+    cursor: pointer;
+    white-space: nowrap;
+    user-select: none;
+    transition: all .15s;
+    flex-shrink: 0;
+    position: relative;
+}
+.tab:hover { background: var(--tab-hover-bg); color: var(--fg); }
+.tab.active {
+    background: var(--tab-active-bg);
+    color: var(--fg);
+    font-weight: 500;
+    border-bottom: 2px solid var(--accent);
+}
+.tab .tab-icon { font-size: 13px; }
+.tab .tab-close {
+    font-size: 10px;
+    padding: 1px 3px;
+    border-radius: 3px;
+    opacity: 0.5;
+    transition: all .15s;
+    line-height: 1;
+}
+.tab .tab-close:hover { opacity: 1; background: rgba(200,60,60,0.2); color: #d33; }
+
+.tab-add {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 30px;
+    height: 100%;
+    font-size: 16px;
+    color: var(--muted);
+    cursor: pointer;
+    flex-shrink: 0;
+    transition: all .15s;
+    border-right: 1px solid transparent;
+}
+.tab-add:hover { color: var(--accent); background: var(--tab-hover-bg); }
+
+/* ── Content Area ── */
+#content-area {
+    flex: 1;
+    overflow-y: auto;
+    padding: 32px 24px;
+    position: relative;
+}
+
+#content {
+    max-width: 820px;
+    margin: 0 auto;
+}
+
+/* ── Welcome (no files) ── */
+#welcome {
+    display: none;
+    text-align: center;
+    padding: 60px 20px;
+}
+#welcome.show { display: block; }
+#welcome .logo { font-size: 56px; margin-bottom: 12px; }
+#welcome h1 { font-size: 26px; font-weight: 700; color: var(--fg); margin-bottom: 6px; }
+#welcome p { font-size: 14px; color: var(--muted); margin-bottom: 20px; }
+#welcome .btn-open {
+    display: inline-block;
+    padding: 10px 32px;
+    background: var(--accent);
+    color: #fff;
+    border: none;
+    border-radius: 6px;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    font-family: inherit;
+    transition: background .2s;
+}
+#welcome .btn-open:hover { filter: brightness(1.1); }
+#welcome .shortcuts {
+    margin-top: 24px;
+    font-size: 12px;
+    color: var(--muted);
+}
+#welcome .shortcuts kbd {
+    display: inline-block;
+    padding: 2px 6px;
+    background: var(--pre-bg);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    font-family: inherit;
+    font-size: 11px;
+}
+
+/* ── File Picker Modal ── */
+.modal-overlay {
+    display: none;
+    position: fixed;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(0,0,0,0.4);
+    z-index: 9999;
+    align-items: center;
+    justify-content: center;
+}
+.modal-overlay.show { display: flex; }
+
+.modal-box {
+    background: var(--bg);
+    border-radius: 12px;
+    box-shadow: 0 8px 40px rgba(0,0,0,0.2);
+    padding: 36px 32px;
+    width: 100%;
+    max-width: 520px;
+    position: relative;
+    max-height: 80vh;
+    overflow-y: auto;
+}
+.modal-box h2 { font-size: 18px; margin-bottom: 4px; }
+.modal-box .sub { font-size: 13px; color: var(--muted); margin-bottom: 20px; }
+.modal-close {
+    position: absolute;
+    top: 12px; right: 14px;
+    font-size: 18px;
+    color: var(--muted);
+    cursor: pointer;
+    background: none;
+    border: none;
+    font-family: inherit;
+    transition: color .15s;
+}
+.modal-close:hover { color: var(--fg); }
+
+.btn-browse {
+    display: inline-block;
+    padding: 8px 24px;
+    background: var(--accent);
+    color: #fff;
+    border: none;
+    border-radius: 6px;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    font-family: inherit;
+    margin-top: 8px;
+    transition: background .2s;
+}
+.btn-browse:hover { filter: brightness(1.1); }
+#modalFileInput { display: none; }
+
+#modal-status {
+    margin-top: 10px;
+    padding: 8px 12px;
+    border-radius: 6px;
+    font-size: 13px;
+    display: none;
+}
+#modal-status.success { display: block; background: #dff0d8; color: #3c763d; }
+#modal-status.error { display: block; background: #f2dede; color: #a94442; }
+#modal-status.loading { display: block; background: #d9edf7; color: #31708f; }
+
+/* ── Markdown Content Styles ── */
+#content h1 { font-size: 26px; margin: 0 0 16px; font-weight: 600; border-bottom: 1px solid var(--border); padding-bottom: 8px; }
+#content h2 { font-size: 20px; margin: 26px 0 10px; font-weight: 600; }
+#content h3 { font-size: 17px; margin: 22px 0 8px; font-weight: 600; }
+#content h4 { font-size: 15px; margin: 18px 0 6px; font-weight: 600; }
+#content h5, #content h6 { font-size: 13px; margin: 14px 0 6px; font-weight: 600; color: var(--muted); }
+#content p { margin: 0 0 12px; }
+#content a { color: var(--accent); text-decoration: none; }
+#content a:hover { text-decoration: underline; }
+#content strong { font-weight: 600; }
+#content em { font-style: italic; }
+#content ul, #content ol { padding-left: 22px; margin: 0 0 12px; }
+#content li { margin: 3px 0; }
+#content li > p { margin-top: 4px; }
+#content input[type=checkbox] { margin-right: 5px; transform: scale(1.02); }
+#content ul:has(input[type=checkbox]) { list-style: none; padding-left: 0; }
+#content blockquote { margin: 0 0 12px; padding: 4px 14px; color: var(--muted); border-left: 4px solid var(--border); }
+#content code { padding: 2px 5px; font-size: .88em; font-family: "SF Mono", Consolas, "Cascadia Code", monospace; background: var(--code-bg); border-radius: 3px; }
+#content pre { padding: 12px 14px; overflow-x: auto; font-size: .88em; line-height: 1.5; background: var(--pre-bg); border: 1px solid var(--border); border-radius: 6px; margin-bottom: 12px; }
+#content pre code { padding: 0; font-size: 100%; background: transparent; border: 0; }
+#content table { border-collapse: collapse; width: 100%; margin-bottom: 12px; font-size: .95em; }
+#content th, #content td { padding: 6px 10px; border: 1px solid var(--border); text-align: left; }
+#content th { font-weight: 600; background: var(--table-hdr); }
+#content tr:nth-child(even) { background: var(--table-alt); }
+#content hr { height: 1px; border: 0; background: var(--border); margin: 22px 0; }
+#content img { max-width: 100%; border-radius: 4px; margin: 6px 0; }
+
+/* ── Loading indicator ── */
+.loading-bar {
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    height: 2px;
+    background: transparent;
+    z-index: 100;
+}
+.loading-bar.active {
+    background: linear-gradient(90deg, transparent, var(--accent), transparent);
+    animation: loadingSlide 1.2s infinite;
+}
+@keyframes loadingSlide {
+    0% { transform: translateX(-100%); }
+    100% { transform: translateX(100%); }
+}
+
+/* ── Print styles ── */
+@media print {
+    #toolbar, #tab-bar, .modal-overlay, .loading-bar { display: none !important; }
+    body { overflow: visible !important; height: auto !important; }
+    #content-area { padding: 0 !important; overflow: visible !important; }
+    #content { max-width: 100% !important; }
+    pre { break-inside: avoid; }
+    table { break-inside: avoid; }
+    h1, h2, h3, h4 { break-after: avoid; }
+}
+</style>
+</head>
+<body>
+
+<!-- ── Toolbar ── -->
+<div id="toolbar">
+    <div class="left">
+        <span class="brand"><span class="m-logo">M</span>Markdown Preview</span>
+        <button id="btnOpen" data-zh="📂 打开" data-en="📂 Open">📂 打开</button>
+        <button id="btnPrint" data-zh="🖨️ 打印" data-en="🖨️ Print">🖨️ 打印</button>
+    </div>
+    <div class="right">
+        <span class="links">
+            <a href="https://yujian2025.blog.csdn.net" target="_blank">blog</a>
+            <span style="color:var(--border);margin:0 3px;">|</span>
+            <a href="https://github.com/yujian2025" target="_blank">git</a>
+        </span>
+        <button id="langToggle" data-zh="中 / EN" data-en="中 / EN">中 / EN</button>
+    </div>
+</div>
+
+<!-- ── Tab Bar ── -->
+<div id="tab-bar">
+    __TABS__
+    <div class="tab-add" id="btnAddTab" title="Open file">+</div>
+</div>
+
+<!-- ── Content Area ── -->
+<div id="content-area">
+    <div class="loading-bar" id="loadingBar"></div>
+    <div id="content" style="display:none;">__CONTENT__</div>
+    <div id="welcome">
+        <div class="logo">📝</div>
+        <h1>Markdown Preview</h1>
+        <p data-zh="打开 .md 文件，实时预览" data-en="Open .md files to preview with live reload">打开 .md 文件，实时预览</p>
+        <button class="btn-open" id="welcomeOpenBtn" data-zh="📂 打开文件" data-en="📂 Open File">📂 打开文件</button>
+        <div class="shortcuts">
+            <span data-zh="拖拽 .md 文件到窗口，或点击上方" data-en="Drag .md files into the window, or click above">拖拽 .md 文件到窗口，或点击上方</span>
+        </div>
+    </div>
+</div>
+
+<!-- ── File Picker Modal ── -->
+<div class="modal-overlay" id="filePicker">
+    <div class="modal-box" style="max-width:380px;text-align:center;">
+        <button class="modal-close" id="modalClose">✕</button>
+        <h2 data-zh="打开文件" data-en="Open File">打开文件</h2>
+        <p class="sub" data-zh="选择 .md 文件进行预览" data-en="Choose a .md file to preview">选择 .md 文件进行预览</p>
+
+        <div style="padding:16px 0;">
+            <div style="font-size:48px;margin-bottom:12px;">📄</div>
+            <button class="btn-browse" id="modalBrowseBtn" type="button" style="font-size:15px;padding:12px 36px;" data-zh="浏览文件" data-en="Browse Files">浏览文件</button>
+            <input type="file" id="modalFileInput" accept=".md,.markdown,.txt">
+            <div style="margin-top:12px;font-size:12px;color:var(--muted);" data-zh="也可以将文件拖拽到窗口任意位置" data-en="You can also drag files into the window">也可以将文件拖拽到窗口任意位置</div>
+        </div>
+
+        <div id="modal-status"></div>
+    </div>
+</div>
+
+<script>
+(function() {
+    'use strict';
+
+    // ── State ──
+    var files = __FILES_JSON__;
+    var activeId = '__ACTIVE_ID__';
+    var versions = {};
+    var contentCache = {};
+    var lang = localStorage.getItem('mdpreview_lang') || 'zh';
+    var pollTimer = null;
+
+    // ── DOM refs ──
+    var tabBar = document.getElementById('tab-bar');
+    var contentDiv = document.getElementById('content');
+    var welcomeDiv = document.getElementById('welcome');
+    var loadingBar = document.getElementById('loadingBar');
+    var langToggle = document.getElementById('langToggle');
+    var btnOpen = document.getElementById('btnOpen');
+    var btnPrint = document.getElementById('btnPrint');
+    var btnAddTab = document.getElementById('btnAddTab');
+    var welcomeOpenBtn = document.getElementById('welcomeOpenBtn');
+
+    // Modal
+    var filePicker = document.getElementById('filePicker');
+    var modalClose = document.getElementById('modalClose');
+    var modalBrowseBtn = document.getElementById('modalBrowseBtn');
+    var modalFileInput = document.getElementById('modalFileInput');
+    var modalStatus = document.getElementById('modal-status');
+
+    // ── Language ──
+    function applyLang(l) {
+        lang = l;
+        localStorage.setItem('mdpreview_lang', l);
+        document.querySelectorAll('[data-zh]').forEach(function(el) {
+            el.textContent = el.getAttribute('data-' + l) || el.textContent;
+        });
+        document.documentElement.lang = l === 'zh' ? 'zh-CN' : 'en';
+    }
+    applyLang(lang);
+
+    langToggle.onclick = function() {
+        applyLang(lang === 'zh' ? 'en' : 'zh');
+    };
+
+    // ── Tab Management ──
+    function renderTabs() {
+        // Remove all tabs except the add button
+        while (tabBar.children.length > 1) {
+            tabBar.removeChild(tabBar.firstChild);
+        }
+
+        var hasFiles = files.length > 0;
+
+        // Insert tabs before the add button
+        files.forEach(function(f) {
+            var tab = document.createElement('div');
+            tab.className = 'tab' + (f.id === activeId ? ' active' : '');
+            tab.setAttribute('data-id', f.id);
+            tab.innerHTML = '<span class="tab-icon">📄</span><span class="tab-name">' + escapeHtml(f.name) + '</span><span class="tab-close" data-id="' + f.id + '">✕</span>';
+
+            tab.addEventListener('click', function(e) {
+                if (e.target.classList.contains('tab-close')) return;
+                switchTab(f.id);
+            });
+
+            tab.querySelector('.tab-close').addEventListener('click', function(e) {
+                e.stopPropagation();
+                closeTab(f.id);
+            });
+
+            tabBar.insertBefore(tab, tabBar.lastChild);
+        });
+
+        // Show/hide welcome
+        if (hasFiles) {
+            welcomeDiv.classList.remove('show');
+            contentDiv.style.display = 'block';
+        } else {
+            welcomeDiv.classList.add('show');
+            contentDiv.style.display = 'none';
+            activeId = '';
+            refreshTitle();
+        }
+    }
+
+    function switchTab(id) {
+        if (id === activeId) return;
+        activeId = id;
+        renderTabs();
+
+        // Update page title
+        updateTitle(id);
+
+        // Load content from cache or AJAX
+        if (contentCache[id]) {
+            contentDiv.innerHTML = contentCache[id];
+        }
+        loadingBar.classList.add('active');
+        loadContent(id, function() {
+            loadingBar.classList.remove('active');
+            startPolling(id);
+        });
+    }
+
+    function closeTab(id) {
+        fetch('/close?id=' + encodeURIComponent(id), { method: 'POST' })
+            .then(function() {
+                // Remove from files array
+                var idx = -1;
+                for (var i = 0; i < files.length; i++) {
+                    if (files[i].id === id) { idx = i; break; }
+                }
+                if (idx >= 0) files.splice(idx, 1);
+                delete versions[id];
+
+                // If closed the active tab, switch to another
+                if (id === activeId) {
+                    if (files.length > 0) {
+                        switchTab(files[Math.min(idx, files.length - 1)].id);
+                    } else {
+                        activeId = '';
+                        renderTabs();
+                        stopPolling();
+                    }
+                } else {
+                    renderTabs();
+                }
+
+                // Always update title after closing
+                refreshTitle();
+            });
+    }
+
+    function refreshTitle() {
+        if (files.length > 0 && activeId) {
+            updateTitle(activeId);
+        } else {
+            document.title = 'Markdown Preview';
+        }
+    }
+
+    function addTab(id, name) {
+        // Check if already exists
+        for (var i = 0; i < files.length; i++) {
+            if (files[i].id === id) {
+                switchTab(id);
+                return;
+            }
+        }
+        files.push({ id: id, name: name });
+        renderTabs();
+        switchTab(id);
+    }
+
+    // ── Content Loading ──
+    function loadContent(id, callback) {
+        // If already cached, use cache immediately
+        if (contentCache[id]) {
+            contentDiv.innerHTML = contentCache[id];
+            if (callback) callback();
+            return;
+        }
+        fetch('/content?id=' + encodeURIComponent(id))
+            .then(function(r) { return r.text(); })
+            .then(function(html) {
+                contentCache[id] = html;
+                contentDiv.innerHTML = html;
+                if (callback) callback();
+            })
+            .catch(function() {
+                if (callback) callback();
+            });
+    }
+
+    // ── Live Reload (Polling) ──
+    function startPolling(id) {
+        stopPolling();
+        // Initialize version
+        versions[id] = 0;
+        fetch('/check?id=' + encodeURIComponent(id) + '&t=' + Date.now())
+            .then(function(r) { return r.text(); })
+            .then(function(n) { versions[id] = parseInt(n, 10) || 0; })
+            .catch(function() {});
+
+        pollTimer = setInterval(function() {
+            var checkId = activeId;
+            if (!checkId) return;
+            fetch('/check?id=' + encodeURIComponent(checkId) + '&t=' + Date.now())
+                .then(function(r) { return r.text(); })
+                .then(function(n) {
+                    var x = parseInt(n, 10) || 0;
+                    if (versions[checkId] === 0) {
+                        versions[checkId] = x;
+                    } else if (x !== versions[checkId]) {
+                        versions[checkId] = x;
+                        // Invalidate cache so content is refreshed
+                        delete contentCache[checkId];
+                        loadingBar.classList.add('active');
+                        loadContent(checkId, function() {
+                            loadingBar.classList.remove('active');
+                        });
+                    }
+                })
+                .catch(function() {});
+        }, 1500);
+    }
+
+    function stopPolling() {
+        if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+    }
+
+    // ── File Operations ──
+    function openFilePicker() {
+        filePicker.classList.add('show');
+        modalStatus.className = '';
+        modalStatus.style.display = 'none';
+    }
+
+    function closeFilePicker() {
+        filePicker.classList.remove('show');
+    }
+
+    function setModalStatus(msg, type) {
+        modalStatus.textContent = msg;
+        modalStatus.className = type || '';
+        modalStatus.style.display = 'block';
+    }
+
+    // Upload file via drag/browse
+    function uploadFile(file) {
+        if (!file.name.match(/\.(md|markdown|txt)$/i)) {
+            setModalStatus(lang === 'zh' ? '请选择 .md 文件' : 'Please select a .md file', 'error');
+            return;
+        }
+        setModalStatus((lang === 'zh' ? '正在读取 ' : 'Reading ') + file.name + '...', 'loading');
+        var reader = new FileReader();
+        reader.onload = function(e) {
+            fetch('/upload', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ content: e.target.result, name: file.name })
+            })
+            .then(function(r) { return r.text(); })
+            .then(function(result) {
+                if (result.indexOf('ERROR:') === 0) {
+                    setModalStatus(result, 'error');
+                } else {
+                    closeFilePicker();
+                    addTab(result, file.name);
+                }
+            })
+            .catch(function() { setModalStatus(lang === 'zh' ? '连接失败' : 'Connection lost', 'error'); });
+        };
+        reader.readAsText(file);
+    }
+
+    // ── Event Listeners ──
+
+    // Open buttons
+    btnOpen.onclick = openFilePicker;
+    btnAddTab.onclick = openFilePicker;
+    welcomeOpenBtn.onclick = openFilePicker;
+    modalClose.onclick = closeFilePicker;
+    filePicker.addEventListener('click', function(e) {
+        if (e.target === filePicker) closeFilePicker();
+    });
+
+    // Browse
+    modalBrowseBtn.addEventListener('click', function(e) {
+        e.stopPropagation();
+        modalFileInput.click();
+    });
+    modalFileInput.addEventListener('change', function() {
+        if (this.files && this.files[0]) uploadFile(this.files[0]);
+    });
+
+    // Drag & Drop on body (global)
+    document.body.addEventListener('dragover', function(e) {
+        if (e.dataTransfer.types && e.dataTransfer.types.indexOf('Files') >= 0) {
+            e.preventDefault();
+        }
+    });
+    document.body.addEventListener('drop', function(e) {
+        e.preventDefault();
+        if (e.dataTransfer.files && e.dataTransfer.files[0]) {
+            var dt = e.dataTransfer.files[0];
+            if (dt.name.match(/\.(md|markdown|txt)$/i)) {
+                uploadFile(dt);
+            }
+        }
+    });
+
+    // Print
+    btnPrint.onclick = function() {
+        window.print();
+    };
+
+    // ── Keyboard shortcuts ──
+    document.addEventListener('keydown', function(e) {
+        // Ctrl+O / Cmd+O → Open file
+        if ((e.ctrlKey || e.metaKey) && e.key === 'o') {
+            e.preventDefault();
+            openFilePicker();
+        }
+        // Ctrl+P / Cmd+P → Print
+        if ((e.ctrlKey || e.metaKey) && e.key === 'p') {
+            // Let default print dialog handle it
+        }
+        // Escape → Close modal
+        if (e.key === 'Escape' && filePicker.classList.contains('show')) {
+            closeFilePicker();
+        }
+    });
+
+    // ── Helper ──
+    function escapeHtml(str) {
+        return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+    }
+
+    function updateTitle(id) {
+        for (var i = 0; i < files.length; i++) {
+            if (files[i].id === id) {
+                document.title = 'Markdown Preview — ' + files[i].name;
+                return;
+            }
+        }
+        document.title = 'Markdown Preview';
+    }
+
+    // ── Init ──
+    renderTabs();
+    if (activeId) {
+        updateTitle(activeId);
+        // Initial content is already server-rendered in __CONTENT__,
+        // just start polling for live reload
+        contentDiv.style.display = 'block';
+        startPolling(activeId);
+    }
+})();
+</script>
+</body>
+</html>

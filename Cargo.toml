@@ -1,6 +1,6 @@
 [package]
 name = "markdownpreview"
-version = "0.1.0"
+version = "0.2.0"
 authors = ["atomcode"]
 edition = "2021"
 description = "A fast, minimal markdown preview reader with live reload — a lightweight alternative to VS Code markdown plugins"
@@ -19,7 +19,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 winapi = { version = "0.3", features = [
     "shellapi", "winuser", "libloaderapi", "commctrl",
-    "minwindef", "windef", "winbase",
+    "minwindef", "windef", "winbase", "wingdi",
 ] }
 
 [profile.release]

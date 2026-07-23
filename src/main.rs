@@ -3,18 +3,18 @@
 
 use clap::Parser;
 use markdownpreview::server;
+use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
-use std::time::SystemTime;
+use std::sync::Arc;
+use std::sync::Mutex;
 
 /// A fast, minimal markdown preview reader with live reload
 #[derive(Parser, Debug)]
 #[command(name = "markdownpreview")]
 #[command(version, about, long_about = None)]
 struct Args {
-    /// Markdown file to preview (optional — use file picker page if omitted)
-    file: Option<PathBuf>,
+    /// Markdown file(s) to preview (optional — use file picker page if omitted)
+    file: Vec<PathBuf>,
 
     /// Port for the preview server (default: 8080)
     #[arg(short = 'p', long, default_value_t = 8080)]
@@ -53,47 +53,56 @@ fn main() {
     let theme = validate_theme(&args.theme);
     let port = args.port;
 
-    // Shared state
-    let markdown: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
-    let version: Arc<AtomicU64> = Arc::new(AtomicU64::new(current_timestamp_nanos()));
-    let current_path: Arc<Mutex<Option<PathBuf>>> = Arc::new(Mutex::new(None));
-    let has_file: Arc<Mutex<bool>> = Arc::new(Mutex::new(false));
+    // Shared state: map of file_id -> FileEntry
+    let files: server::FileMap = Arc::new(Mutex::new(HashMap::new()));
 
-    // If a file was provided via CLI, read it and start watching
-    if let Some(file) = &args.file {
-        if !file.exists() {
-            eprintln!("Error: file '{}' not found", file.display());
-            std::process::exit(1);
+    // If files were provided via CLI, read them and start watching
+    if !args.file.is_empty() {
+        for file in &args.file {
+            if !file.exists() {
+                eprintln!("  Error: file '{}' not found", file.display());
+                continue;
+            }
+            let file_path = std::fs::canonicalize(file).unwrap_or_else(|e| {
+                eprintln!("  Error resolving path: {}", e);
+                std::process::exit(1);
+            });
+            let content = std::fs::read_to_string(&file_path).unwrap_or_else(|e| {
+                eprintln!("  Error reading file: {}", e);
+                std::process::exit(1);
+            });
+
+            let file_id = server::make_file_id(&file_path);
+            let display_name = file_path
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_else(|| "unknown".to_string());
+
+            let entry = server::FileEntry {
+                content,
+                path: Some(file_path.clone()),
+                display_name: display_name.clone(),
+                version: server::current_timestamp(),
+            };
+
+            // Spawn file watcher
+            let w_path = file_path.clone();
+            let w_id = file_id.clone();
+            let w_files = files.clone();
+            std::thread::spawn(move || server::watch_file_id(&w_path, &w_id, w_files));
+
+            files.lock().unwrap().insert(file_id, entry);
         }
-        let file_path = std::fs::canonicalize(file).unwrap_or_else(|e| {
-            eprintln!("Error resolving path: {}", e);
-            std::process::exit(1);
-        });
-        let initial_content = std::fs::read_to_string(&file_path).unwrap_or_else(|e| {
-            eprintln!("Error reading file: {}", e);
-            std::process::exit(1);
-        });
-        *markdown.lock().unwrap() = initial_content;
-        *current_path.lock().unwrap() = Some(file_path.clone());
-        *has_file.lock().unwrap() = true;
-
-        let wm = markdown.clone();
-        let wv = version.clone();
-        let fp = file_path.clone();
-        std::thread::spawn(move || start_watcher(&fp, wm, wv));
-
-        print_banner(Some(&file_path), port, &theme);
-    } else {
-        print_banner(None, port, &theme);
     }
 
+    // Print banner
+    let file_count = files.lock().unwrap().len();
+    print_banner(file_count, port, &theme);
+
     // Start HTTP server
-    let sm = markdown.clone();
-    let sv = version.clone();
-    let sp = current_path.clone();
-    let sh = has_file.clone();
+    let sf = files.clone();
     let st = theme.clone();
-    std::thread::spawn(move || server::run_server(port, sm, sv, sp, sh, &st));
+    std::thread::spawn(move || server::run_server(port, sf, &st));
 
     // Give server a moment to start, then open browser
     if !args.no_open {
@@ -118,19 +127,18 @@ fn run_tray(port: u16) {
     use winapi::shared::windef::HWND;
     use winapi::um::libloaderapi::GetModuleHandleW;
     use winapi::um::winuser::{
-        CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu, 
-        DispatchMessageW, GetMessageW, PostQuitMessage, RegisterClassW,
-        SetForegroundWindow, TrackPopupMenu, TranslateMessage, 
-        AppendMenuW, LoadCursorW, LoadIconW, MSG, WNDCLASSW,
-        CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, IDI_APPLICATION, 
-        IDC_ARROW, WS_OVERLAPPEDWINDOW, WM_DESTROY, WM_COMMAND,
-        WM_USER, TPM_LEFTALIGN, MF_STRING, MF_SEPARATOR, DestroyWindow,
-        GetCursorPos,
+        AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW,
+        DestroyMenu, DestroyWindow, DispatchMessageW, GetCursorPos,
+        GetMessageW, LoadCursorW, PostQuitMessage, RegisterClassW,
+        SetForegroundWindow, TrackPopupMenu, TranslateMessage,
+        CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, IDC_ARROW,
+        MF_SEPARATOR, MF_STRING, MSG, TPM_LEFTALIGN, WNDCLASSW,
+        WS_OVERLAPPEDWINDOW, WM_COMMAND, WM_DESTROY, WM_USER,
     };
-    use winapi::um::shellapi::{Shell_NotifyIconW, NOTIFYICONDATAW,
-        NIM_ADD, NIM_DELETE, NIF_MESSAGE, NIF_ICON, NIF_TIP};
-    use std::ffi::OsStr;
-    use std::os::windows::ffi::OsStrExt;
+    use winapi::um::shellapi::{
+        Shell_NotifyIconW, NOTIFYICONDATAW, NIM_ADD, NIM_DELETE,
+        NIF_ICON, NIF_MESSAGE, NIF_TIP,
+    };
 
     const WM_TRAY_CALLBACK: u32 = WM_USER + 100;
     const ID_TRAY_OPEN: usize = 1001;
@@ -140,11 +148,17 @@ fn run_tray(port: u16) {
     static mut TRAY_PORT: u16 = 8080;
     unsafe { TRAY_PORT = port; }
 
+    // ── Create custom "M" icon ──
+    let m_icon = create_m_icon();
+
     // Window procedure
     extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: usize, lparam: isize) -> isize {
         unsafe {
             match msg {
-                WM_DESTROY => { PostQuitMessage(0); return 0; }
+                WM_DESTROY => {
+                    PostQuitMessage(0);
+                    return 0;
+                }
                 WM_COMMAND => {
                     let id = wparam & 0xFFFF;
                     match id as usize {
@@ -164,17 +178,34 @@ fn run_tray(port: u16) {
                     }
                 }
                 WM_TRAY_CALLBACK => {
-                    if lparam as u32 == 0x205 { // WM_CONTEXTMENU (right click)
+                    if lparam as u32 == 0x205 {
+                        // WM_CONTEXTMENU (right click)
                         let mut pos = std::mem::zeroed();
                         GetCursorPos(&mut pos);
                         let hmenu = CreatePopupMenu();
-                        AppendMenuW(hmenu, MF_STRING, ID_TRAY_OPEN,
-                            to_wstr("打开浏览器 / Open Browser").as_ptr());
+                        AppendMenuW(
+                            hmenu,
+                            MF_STRING,
+                            ID_TRAY_OPEN,
+                            to_wstr("打开浏览器 / Open Browser").as_ptr(),
+                        );
                         AppendMenuW(hmenu, MF_SEPARATOR, 0, std::ptr::null());
-                        AppendMenuW(hmenu, MF_STRING, ID_TRAY_EXIT,
-                            to_wstr("退出 / Exit").as_ptr());
+                        AppendMenuW(
+                            hmenu,
+                            MF_STRING,
+                            ID_TRAY_EXIT,
+                            to_wstr("退出 / Exit").as_ptr(),
+                        );
                         SetForegroundWindow(hwnd);
-                        TrackPopupMenu(hmenu, TPM_LEFTALIGN, pos.x, pos.y, 0, hwnd, std::ptr::null_mut());
+                        TrackPopupMenu(
+                            hmenu,
+                            TPM_LEFTALIGN,
+                            pos.x,
+                            pos.y,
+                            0,
+                            hwnd,
+                            std::ptr::null_mut(),
+                        );
                         DestroyMenu(hmenu);
                         return 0;
                     }
@@ -195,7 +226,7 @@ fn run_tray(port: u16) {
             cbClsExtra: 0,
             cbWndExtra: 0,
             hInstance: hinst,
-            hIcon: LoadIconW(std::ptr::null_mut(), IDI_APPLICATION),
+            hIcon: m_icon,
             hCursor: LoadCursorW(std::ptr::null_mut(), IDC_ARROW),
             hbrBackground: std::ptr::null_mut(),
             lpszMenuName: std::ptr::null(),
@@ -205,9 +236,18 @@ fn run_tray(port: u16) {
         RegisterClassW(&wc);
 
         let hwnd = CreateWindowExW(
-            0, class_name.as_ptr(), to_wstr("MarkdownPreview").as_ptr(),
-            WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT,
-            0, 0, std::ptr::null_mut(), std::ptr::null_mut(), hinst, std::ptr::null_mut(),
+            0,
+            class_name.as_ptr(),
+            to_wstr("MarkdownPreview").as_ptr(),
+            WS_OVERLAPPEDWINDOW,
+            CW_USEDEFAULT,
+            CW_USEDEFAULT,
+            0,
+            0,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            hinst,
+            std::ptr::null_mut(),
         );
 
         let mut nid: NOTIFYICONDATAW = std::mem::zeroed();
@@ -216,10 +256,10 @@ fn run_tray(port: u16) {
         nid.uID = 1;
         nid.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
         nid.uCallbackMessage = WM_TRAY_CALLBACK;
-        nid.hIcon = LoadIconW(std::ptr::null_mut(), IDI_APPLICATION);
+        nid.hIcon = m_icon;
 
         // Tooltip
-        let tip = to_wstr("Markdown Preview");
+        let tip = to_wstr("Markdown Preview v0.2.0");
         let tip_len = tip.len().min(128);
         let tip_slice = &tip[..tip_len];
         for (i, &ch) in tip_slice.iter().enumerate() {
@@ -239,7 +279,167 @@ fn run_tray(port: u16) {
 
         // Cleanup
         Shell_NotifyIconW(NIM_DELETE, &mut nid);
+        if !m_icon.is_null() {
+            winapi::um::winuser::DestroyIcon(m_icon);
+        }
     }
+}
+
+/// Create a custom "M" icon for the program using Windows GDI.
+fn create_m_icon() -> winapi::shared::windef::HICON {
+    unsafe {
+        use winapi::ctypes::c_void;
+        use winapi::shared::windef::HICON;
+        use winapi::um::wingdi::*;
+        use winapi::um::winuser::{CreateIconIndirect, GetDC, ICONINFO, ReleaseDC};
+
+        const W: i32 = 32;
+        const H: i32 = 32;
+
+        let hdc_screen = GetDC(std::ptr::null_mut());
+        let hdc = CreateCompatibleDC(hdc_screen);
+
+        // ── Color bitmap (32bpp BGRA) ──
+        let mut bmi: BITMAPINFO = std::mem::zeroed();
+        bmi.bmiHeader.biSize = std::mem::size_of::<BITMAPINFOHEADER>() as u32;
+        bmi.bmiHeader.biWidth = W;
+        bmi.bmiHeader.biHeight = -H; // top-down
+        bmi.bmiHeader.biPlanes = 1;
+        bmi.bmiHeader.biBitCount = 32;
+        bmi.bmiHeader.biCompression = BI_RGB;
+
+        let mut color_bits: *mut c_void = std::ptr::null_mut();
+        let hbmp_color = CreateDIBSection(
+            hdc,
+            &mut bmi,
+            DIB_RGB_COLORS,
+            &mut color_bits,
+            std::ptr::null_mut(),
+            0,
+        );
+
+        if hbmp_color.is_null() {
+            DeleteDC(hdc);
+            ReleaseDC(std::ptr::null_mut(), hdc_screen);
+            return std::ptr::null_mut();
+        }
+
+        // Fill pixel data: blue background + white "M" letter
+        let pixels = std::slice::from_raw_parts_mut(color_bits as *mut u32, (W * H) as usize);
+        let bg = 0xFF4A6AE0u32; // Blue (#4A6AE0)
+        let fg = 0xFFFFFFFFu32; // White
+
+        for y in 0..H {
+            for x in 0..W {
+                let i = (y * W + x) as usize;
+                let is_m = is_m_pixel_32(x, y);
+                let is_border = is_rounded_corner(x, y, W, H);
+                pixels[i] = if is_border {
+                    0x00000000 // transparent
+                } else if is_m {
+                    fg
+                } else {
+                    bg
+                };
+            }
+        }
+
+        // ── Mask bitmap (1bpp, 1 = transparent, 0 = opaque) ──
+        let mask_row_bytes = ((W + 31) / 32) * 4;
+        let mut mask_data = vec![0u8; (mask_row_bytes * H) as usize];
+        for y in 0..H {
+            for x in 0..W {
+                if is_rounded_corner(x, y, W, H) {
+                    let byte_idx = (y * mask_row_bytes + x / 8) as usize;
+                    mask_data[byte_idx] |= 1 << (7 - (x % 8));
+                }
+            }
+        }
+        let hbmp_mask = CreateBitmap(
+            W,
+            H,
+            1,
+            1,
+            mask_data.as_ptr() as *const c_void,
+        );
+
+        // ── Create icon ──
+        let mut icon_info: ICONINFO = std::mem::zeroed();
+        icon_info.fIcon = 1;
+        icon_info.hbmColor = hbmp_color;
+        icon_info.hbmMask = hbmp_mask;
+
+        let hicon: HICON = CreateIconIndirect(&mut icon_info);
+
+        // Cleanup GDI objects
+        DeleteObject(hbmp_color as *mut _);
+        DeleteObject(hbmp_mask as *mut _);
+        DeleteDC(hdc);
+        ReleaseDC(std::ptr::null_mut(), hdc_screen);
+
+        hicon
+    }
+}
+
+/// Check if a pixel is part of the "M" letter shape (32x32 icon).
+fn is_m_pixel_32(x: i32, y: i32) -> bool {
+    // Left vertical bar (x: 5-8, y: 6-27)
+    if x >= 5 && x <= 8 && y >= 6 && y <= 27 {
+        return true;
+    }
+    // Right vertical bar (x: 23-26, y: 6-27)
+    if x >= 23 && x <= 26 && y >= 6 && y <= 27 {
+        return true;
+    }
+    // Left diagonal: from (8, 6) to (15, 27)
+    if x >= 8 && x <= 15 && y >= 6 && y <= 27 {
+        let expected_y = 3 * (x - 8) + 6; // slope = 21/7 = 3
+        if (y - expected_y).abs() <= 2 {
+            return true;
+        }
+    }
+    // Right diagonal: from (15, 27) to (23, 6)
+    if x >= 15 && x <= 23 && y >= 6 && y <= 27 {
+        let expected_y = ((-21.0 / 8.0) * (x - 15) as f64 + 27.0) as i32;
+        if (y - expected_y).abs() <= 2 {
+            return true;
+        }
+    }
+    // Top horizontal bar connecting the two verticals (x: 8-23, y: 6-8)
+    if x >= 9 && x <= 22 && y >= 6 && y <= 8 {
+        return true;
+    }
+    false
+}
+
+/// Check if a pixel is outside the rounded corners (for transparency).
+fn is_rounded_corner(x: i32, y: i32, w: i32, h: i32) -> bool {
+    let r = 4; // corner radius
+    // Top-left
+    if x < r && y < r {
+        let dx = x - r + 1;
+        let dy = y - r + 1;
+        return dx * dx + dy * dy > r * r;
+    }
+    // Top-right
+    if x >= w - r && y < r {
+        let dx = x - (w - r) - 1;
+        let dy = y - r + 1;
+        return dx * dx + dy * dy > r * r;
+    }
+    // Bottom-left
+    if x < r && y >= h - r {
+        let dx = x - r + 1;
+        let dy = y - (h - r) - 1;
+        return dx * dx + dy * dy > r * r;
+    }
+    // Bottom-right
+    if x >= w - r && y >= h - r {
+        let dx = x - (w - r) - 1;
+        let dy = y - (h - r) - 1;
+        return dx * dx + dy * dy > r * r;
+    }
+    false
 }
 
 fn to_wstr(s: &str) -> Vec<u16> {
@@ -261,17 +461,23 @@ fn install_startup() {
     let exe = exe_path();
     match std::process::Command::new("reg")
         .args(&[
-            "add", "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run",
-            "/v", "MarkdownPreview",
-            "/t", "REG_SZ",
-            "/d", &exe,
+            "add",
+            "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run",
+            "/v",
+            "MarkdownPreview",
+            "/t",
+            "REG_SZ",
+            "/d",
+            &exe,
             "/f",
         ])
         .status()
     {
         Ok(s) if s.success() => {
-            println!("✅ Auto-start installed: {}\n   → {}", 
-                "MarkdownPreview will start on boot", exe);
+            println!(
+                "✅ Auto-start installed: {}\n   → {}",
+                "MarkdownPreview will start on boot", exe
+            );
         }
         _ => {
             eprintln!("❌ Failed to install auto-start (try running as admin)");
@@ -282,8 +488,10 @@ fn install_startup() {
 fn uninstall_startup() {
     match std::process::Command::new("reg")
         .args(&[
-            "delete", "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run",
-            "/v", "MarkdownPreview",
+            "delete",
+            "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run",
+            "/v",
+            "MarkdownPreview",
             "/f",
         ])
         .status()
@@ -308,63 +516,27 @@ fn validate_theme(theme: &str) -> String {
     t
 }
 
-fn print_banner(file: Option<&std::path::Path>, port: u16, theme: &str) {
-    println!("┌─────────────────────────────────────────┐");
-    println!("│  📝 Markdown Preview v{}","    │");
-    println!("│─────────────────────────────────────────│");
-    if let Some(f) = file {
-        println!("│  File  : {}", f.display());
-        println!("│  Mode  : file preview + auto-reload   │");
+fn print_banner(file_count: usize, port: u16, theme: &str) {
+    let mode = if file_count > 0 {
+        format!("{} file(s) loaded + auto-reload", file_count)
     } else {
-        println!("│  Mode  : file picker (open in browser)│");
-    }
-    println!("│  Port  : {}", port);
-    println!("│  Theme : {}", theme);
-    println!("│  Tray  : right-click icon → Exit        │");
-    println!("└─────────────────────────────────────────┘");
-}
+        "file picker (open in browser)".to_string()
+    };
+    let v = env!("CARGO_PKG_VERSION");
 
-fn start_watcher(
-    file_path: &std::path::Path,
-    content: Arc<Mutex<String>>,
-    version: Arc<AtomicU64>,
-) {
-    use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
-
-    let watch_dir = file_path.parent().unwrap_or(file_path).to_path_buf();
-    let target_file = file_path.file_name().unwrap().to_str().unwrap().to_string();
-    let wd = watch_dir.clone();
-    let tf = target_file.clone();
-
-    let mut watcher: RecommendedWatcher = notify::recommended_watcher(move |res: Result<Event, _>| {
-        if let Ok(event) = res {
-            let is_target = event.paths.iter().any(|p| {
-                p.file_name().and_then(|n| n.to_str()).map(|n| n == tf).unwrap_or(false)
-            });
-            if is_target {
-                if matches!(event.kind, EventKind::Modify(_) | EventKind::Create(_)) {
-                    let fp = wd.join(&tf);
-                    if let Ok(new_content) = std::fs::read_to_string(&fp) {
-                        let mut md = content.lock().unwrap();
-                        if *md != new_content {
-                            *md = new_content;
-                            version.fetch_add(1, Ordering::SeqCst);
-                        }
-                    }
-                }
-            }
-        }
-    }).expect("Failed to create file watcher");
-
-    watcher.watch(&watch_dir, RecursiveMode::NonRecursive).expect("Failed to start watching");
-    println!("  Watching: {} (auto-reload on save)", watch_dir.join(&target_file).display());
-
-    loop { std::thread::sleep(std::time::Duration::from_secs(1)); }
-}
-
-fn current_timestamp_nanos() -> u64 {
-    SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos() as u64
+    println!();
+    println!("  ╔══════════════════════════════════════════╗");
+    println!("  ║         _ __ ___ ___ _ __ ___            ║");
+    println!("  ║        | '_ \\ __/ __| '__/ _ \\           ║");
+    println!("  ║        | |_) |_|\\__ \\ | | (_) |          ║");
+    println!("  ║        | .__/   |___/_|  \\___/           ║");
+    println!("  ║        |_|    Markdown Preview           ║");
+    println!("  ╠══════════════════════════════════════════╣");
+    println!("  ║  Version : {}                                 ║", v);
+    println!("  ║  Mode    : {}      ║", mode);
+    println!("  ║  Port    : {}                                 ║", port);
+    println!("  ║  Theme   : {}                                 ║", theme);
+    println!("  ║  Tray    : right-click icon → Exit            ║");
+    println!("  ╚══════════════════════════════════════════╝");
+    println!();
 }
