@@ -285,98 +285,83 @@ fn to_wstr(s: &str) -> Vec<u16> {
     OsStr::new(s).encode_wide().chain(Some(0)).collect()
 }
 
-/// Create a custom "M" icon using ICO format bytes.
+/// Create a custom "M" icon using GDI (reliable, always works).
 #[cfg(feature = "tray")]
 fn create_m_icon() -> winapi::shared::windef::HICON {
-    const W: u32 = 32;
-    const H: u32 = 32;
+    unsafe {
+        use winapi::ctypes::c_void;
+        use winapi::shared::windef::HICON;
+        use winapi::um::wingdi::*;
+        use winapi::um::winuser::{CreateIconIndirect, GetDC, ICONINFO, ReleaseDC};
 
-    // Generate pixel data (BGRA format, bottom-up for ICO)
-    let mut pixels = vec![0u8; (W * H * 4) as usize];
-    let bg: u32 = 0xFF4A6AE0; // Blue
-    let fg: u32 = 0xFFFFFFFF; // White
-    // ICO stores pixels bottom-up (last row first)
-    for y in 0..H {
-        for x in 0..W {
-            let row = H - 1 - y; // bottom-up
-            let i = (row * W + x) as usize;
-            let color = if is_rounded_corner(x as i32, y as i32, W as i32, H as i32) {
-                0x00000000u32
-            } else if is_m_pixel_32(x as i32, y as i32) {
-                fg
-            } else {
-                bg
-            };
-            // BGRA: byte order is B, G, R, A
-            pixels[i * 4 + 0] = (color & 0xFF) as u8;
-            pixels[i * 4 + 1] = ((color >> 8) & 0xFF) as u8;
-            pixels[i * 4 + 2] = ((color >> 16) & 0xFF) as u8;
-            pixels[i * 4 + 3] = ((color >> 24) & 0xFF) as u8;
+        const W: i32 = 32;
+        const H: i32 = 32;
+
+        let hdc_screen = GetDC(std::ptr::null_mut());
+        let hdc = CreateCompatibleDC(hdc_screen);
+
+        let mut bmi: BITMAPINFO = std::mem::zeroed();
+        bmi.bmiHeader.biSize = std::mem::size_of::<BITMAPINFOHEADER>() as u32;
+        bmi.bmiHeader.biWidth = W;
+        bmi.bmiHeader.biHeight = -H; // top-down
+        bmi.bmiHeader.biPlanes = 1;
+        bmi.bmiHeader.biBitCount = 32;
+        bmi.bmiHeader.biCompression = BI_RGB;
+
+        let mut color_bits: *mut c_void = std::ptr::null_mut();
+        let hbmp_color = CreateDIBSection(hdc, &mut bmi, DIB_RGB_COLORS, &mut color_bits, std::ptr::null_mut(), 0);
+
+        if hbmp_color.is_null() {
+            DeleteDC(hdc);
+            ReleaseDC(std::ptr::null_mut(), hdc_screen);
+            return std::ptr::null_mut();
         }
-    }
 
-    // AND mask (1 = transparent, bottom-up)
-    let and_row_bytes = ((W + 31) / 32) * 4;
-    let mut and_mask = vec![0u8; (and_row_bytes * H) as usize];
-    for y in 0..H {
-        for x in 0..W {
-            if is_rounded_corner(x as i32, y as i32, W as i32, H as i32) {
-                let row = H - 1 - y;
-                let byte_idx = (row * and_row_bytes + x / 8) as usize;
-                and_mask[byte_idx] |= 1 << (7 - (x % 8));
+        // Fill pixel data: BGRA format (blue background + white "M")
+        let pixels = std::slice::from_raw_parts_mut(color_bits as *mut u32, (W * H) as usize);
+        let bg = 0xFF4A6AE0u32; // Blue
+        let fg = 0xFFFFFFFFu32; // White
+
+        for y in 0..H {
+            for x in 0..W {
+                let i = (y * W + x) as usize;
+                pixels[i] = if is_rounded_corner(x, y, W, H) {
+                    0x00000000 // transparent
+                } else if is_m_pixel_32(x, y) {
+                    fg
+                } else {
+                    bg
+                };
             }
         }
-    }
 
-    // Build ICO file data
-    // ── BITMAPINFOHEADER (40 bytes) ──
-    let bih_size: u32 = 40;
-    let mut ico_data: Vec<u8> = Vec::new();
+        // AND mask (1 = transparent)
+        let mask_row_bytes = ((W + 31) / 32) * 4;
+        let mut mask_data = vec![0u8; (mask_row_bytes * H) as usize];
+        for y in 0..H {
+            for x in 0..W {
+                if is_rounded_corner(x, y, W, H) {
+                    let byte_idx = (y * mask_row_bytes + x / 8) as usize;
+                    mask_data[byte_idx] |= 1 << (7 - (x % 8));
+                }
+            }
+        }
+        let hbmp_mask = CreateBitmap(W, H, 1, 1, mask_data.as_ptr() as *const c_void);
 
-    // ICONDIR (6 bytes)
-    ico_data.extend_from_slice(&0u16.to_le_bytes()); // reserved
-    ico_data.extend_from_slice(&1u16.to_le_bytes()); // type = icon
-    ico_data.extend_from_slice(&1u16.to_le_bytes()); // count
+        let mut icon_info: ICONINFO = std::mem::zeroed();
+        icon_info.fIcon = 1;
+        icon_info.hbmColor = hbmp_color;
+        icon_info.hbmMask = hbmp_mask;
 
-    // ICONDIRENTRY (16 bytes)
-    ico_data.push(W as u8);           // width
-    ico_data.push(H as u8);           // height
-    ico_data.push(0);                 // colors
-    ico_data.push(0);                 // reserved
-    ico_data.extend_from_slice(&1u16.to_le_bytes());  // planes
-    ico_data.extend_from_slice(&32u16.to_le_bytes()); // bit count
+        let hicon: HICON = CreateIconIndirect(&mut icon_info);
 
-    let image_size = bih_size + (W * H * 4) + (and_row_bytes * H);
-    ico_data.extend_from_slice(&(image_size as u32).to_le_bytes());
-    let image_offset: u32 = 6 + 16; // header + directory entry
-    ico_data.extend_from_slice(&image_offset.to_le_bytes());
+        // Cleanup GDI objects
+        DeleteObject(hbmp_color as *mut _);
+        DeleteObject(hbmp_mask as *mut _);
+        DeleteDC(hdc);
+        ReleaseDC(std::ptr::null_mut(), hdc_screen);
 
-    // ── Image data: BITMAPINFOHEADER ──
-    ico_data.extend_from_slice(&bih_size.to_le_bytes());
-    ico_data.extend_from_slice(&W.to_le_bytes());
-    ico_data.extend_from_slice(&(H * 2).to_le_bytes()); // ICO: height must be doubled
-    ico_data.extend_from_slice(&1u16.to_le_bytes());    // planes
-    ico_data.extend_from_slice(&32u16.to_le_bytes());   // bpp
-    ico_data.extend_from_slice(&0u32.to_le_bytes());    // compression
-    ico_data.extend_from_slice(&image_size.to_le_bytes()); // image size
-    ico_data.extend_from_slice(&0u32.to_le_bytes());    // x pixels per meter
-    ico_data.extend_from_slice(&0u32.to_le_bytes());    // y pixels per meter
-    ico_data.extend_from_slice(&0u32.to_le_bytes());    // colors used
-    ico_data.extend_from_slice(&0u32.to_le_bytes());    // important colors
-
-    // XOR mask (pixel data)
-    ico_data.extend_from_slice(&pixels);
-    // AND mask
-    ico_data.extend_from_slice(&and_mask);
-
-    unsafe {
-        use winapi::um::winuser::CreateIconFromResource;
-        CreateIconFromResource(
-            ico_data.as_ptr() as *mut u8,
-            ico_data.len() as u32,
-            1,  // fIcon = TRUE
-            0x00030000, // dwReserved = Windows 3.0 format
-        )
+        hicon
     }
 }
 
