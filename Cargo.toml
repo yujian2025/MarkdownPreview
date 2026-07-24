@@ -3,11 +3,15 @@ name = "markdownpreview"
 version = "0.2.0"
 authors = ["atomcode"]
 edition = "2021"
-description = "A fast, minimal markdown preview reader with live reload — a lightweight alternative to VS Code markdown plugins"
+description = "A fast, minimal markdown preview reader with live reload — lightweight alternative to VS Code markdown plugins. Cross-platform (Windows/Linux/macOS)."
 license = "MIT"
 repository = "https://github.com/atomcode/markdownpreview"
-keywords = ["markdown", "preview", "live-reload", "reader"]
+keywords = ["markdown", "preview", "live-reload", "reader", "cross-platform"]
 categories = ["command-line-utilities", "rendering"]
+
+[features]
+default = ["tray"]
+tray = ["dep:winapi"]
 
 [dependencies]
 pulldown-cmark = "0.11"
@@ -17,10 +21,14 @@ clap = { version = "4", features = ["derive"] }
 open = "5"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+ctrlc = "3"
 winapi = { version = "0.3", features = [
     "shellapi", "winuser", "libloaderapi", "commctrl",
     "minwindef", "windef", "winbase", "wingdi",
-] }
+], optional = true }
+
+[target.'cfg(not(windows))'.dependencies]
+# On non-Windows we don't need winapi, but we keep the server-only mode
 
 [profile.release]
 opt-level = "z"

@@ -1,9 +1,10 @@
 //! markdownpreview — A fast, minimal markdown preview reader
-//! Runs with system tray icon support.
+//! Cross-platform (Windows/Linux/macOS).
+//! On Windows with `tray` feature (default), shows a system tray icon.
+//! On other platforms, runs as a terminal server until Ctrl+C.
 
 use clap::Parser;
 use markdownpreview::server;
-use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -40,24 +41,35 @@ struct Args {
 fn main() {
     let args = Args::parse();
 
-    // Handle --install / --uninstall
-    if args.install {
-        install_startup();
-        return;
+    // Handle --install / --uninstall (Windows only)
+    #[cfg(feature = "tray")]
+    {
+        if args.install {
+            install_startup();
+            return;
+        }
+        if args.uninstall {
+            uninstall_startup();
+            return;
+        }
     }
-    if args.uninstall {
-        uninstall_startup();
-        return;
+    #[cfg(not(feature = "tray"))]
+    {
+        if args.install || args.uninstall {
+            eprintln!("  --install / --uninstall is only supported on Windows with the `tray` feature.");
+            std::process::exit(1);
+        }
     }
 
     let theme = validate_theme(&args.theme);
     let port = args.port;
 
     // Shared state: map of file_id -> FileEntry
-    let files: server::FileMap = Arc::new(Mutex::new(HashMap::new()));
+    let files: server::FileMap = Arc::new(Mutex::new(std::collections::HashMap::new()));
 
     // If files were provided via CLI, read them and start watching
-    if !args.file.is_empty() {
+    let file_count = if !args.file.is_empty() {
+        let mut count = 0;
         for file in &args.file {
             if !file.exists() {
                 eprintln!("  Error: file '{}' not found", file.display());
@@ -82,7 +94,7 @@ fn main() {
                 content,
                 path: Some(file_path.clone()),
                 display_name: display_name.clone(),
-                version: server::current_timestamp(),
+                version: current_timestamp(),
             };
 
             // Spawn file watcher
@@ -92,11 +104,14 @@ fn main() {
             std::thread::spawn(move || server::watch_file_id(&w_path, &w_id, w_files));
 
             files.lock().unwrap().insert(file_id, entry);
+            count += 1;
         }
-    }
+        count
+    } else {
+        0
+    };
 
     // Print banner
-    let file_count = files.lock().unwrap().len();
     print_banner(file_count, port, &theme);
 
     // Start HTTP server
@@ -117,12 +132,30 @@ fn main() {
         println!("\n  Open: http://127.0.0.1:{}", port);
     }
 
-    // ── System tray icon ──
+    // ── Platform-specific main loop ──
+    #[cfg(feature = "tray")]
     run_tray(port);
+
+    #[cfg(not(feature = "tray"))]
+    wait_for_exit();
 }
 
-// ── System tray (Windows API) ──
+/// Wait for Ctrl+C or Enter to exit (non-Windows / no-tray mode).
+#[cfg(not(feature = "tray"))]
+fn wait_for_exit() {
+    println!("  Press Ctrl+C to stop the server.");
+    let (tx, rx) = std::sync::mpsc::channel();
+    ctrlc::set_handler(move || {
+        let _ = tx.send(());
+    })
+    .expect("Error setting Ctrl+C handler");
+    let _ = rx.recv();
+    println!("\n  Server stopped.");
+}
 
+// ── Tray icon (Windows only, behind `tray` feature) ──
+
+#[cfg(feature = "tray")]
 fn run_tray(port: u16) {
     use winapi::shared::windef::HWND;
     use winapi::um::libloaderapi::GetModuleHandleW;
@@ -144,68 +177,41 @@ fn run_tray(port: u16) {
     const ID_TRAY_OPEN: usize = 1001;
     const ID_TRAY_EXIT: usize = 1002;
 
-    // Store port in a static so the window procedure can access it
     static mut TRAY_PORT: u16 = 8080;
     unsafe { TRAY_PORT = port; }
 
-    // ── Create custom "M" icon ──
     let m_icon = create_m_icon();
 
-    // Window procedure
     extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: usize, lparam: isize) -> isize {
         unsafe {
             match msg {
-                WM_DESTROY => {
-                    PostQuitMessage(0);
-                    return 0;
-                }
+                WM_DESTROY => { PostQuitMessage(0); return 0; }
                 WM_COMMAND => {
                     let id = wparam & 0xFFFF;
                     match id as usize {
                         ID_TRAY_OPEN => {
                             let p = TRAY_PORT;
                             std::thread::spawn(move || {
-                                let url = format!("http://127.0.0.1:{}", p);
-                                let _ = open::that(&url);
+                                let _ = open::that(&format!("http://127.0.0.1:{}", p));
                             });
                             return 0;
                         }
-                        ID_TRAY_EXIT => {
-                            DestroyWindow(hwnd);
-                            return 0;
-                        }
+                        ID_TRAY_EXIT => { DestroyWindow(hwnd); return 0; }
                         _ => {}
                     }
                 }
                 WM_TRAY_CALLBACK => {
                     if lparam as u32 == 0x205 {
-                        // WM_CONTEXTMENU (right click)
                         let mut pos = std::mem::zeroed();
                         GetCursorPos(&mut pos);
                         let hmenu = CreatePopupMenu();
-                        AppendMenuW(
-                            hmenu,
-                            MF_STRING,
-                            ID_TRAY_OPEN,
-                            to_wstr("打开浏览器 / Open Browser").as_ptr(),
-                        );
+                        AppendMenuW(hmenu, MF_STRING, ID_TRAY_OPEN,
+                            to_wstr("打开浏览器 / Open Browser").as_ptr());
                         AppendMenuW(hmenu, MF_SEPARATOR, 0, std::ptr::null());
-                        AppendMenuW(
-                            hmenu,
-                            MF_STRING,
-                            ID_TRAY_EXIT,
-                            to_wstr("退出 / Exit").as_ptr(),
-                        );
+                        AppendMenuW(hmenu, MF_STRING, ID_TRAY_EXIT,
+                            to_wstr("退出 / Exit").as_ptr());
                         SetForegroundWindow(hwnd);
-                        TrackPopupMenu(
-                            hmenu,
-                            TPM_LEFTALIGN,
-                            pos.x,
-                            pos.y,
-                            0,
-                            hwnd,
-                            std::ptr::null_mut(),
-                        );
+                        TrackPopupMenu(hmenu, TPM_LEFTALIGN, pos.x, pos.y, 0, hwnd, std::ptr::null_mut());
                         DestroyMenu(hmenu);
                         return 0;
                     }
@@ -236,18 +242,9 @@ fn run_tray(port: u16) {
         RegisterClassW(&wc);
 
         let hwnd = CreateWindowExW(
-            0,
-            class_name.as_ptr(),
-            to_wstr("MarkdownPreview").as_ptr(),
-            WS_OVERLAPPEDWINDOW,
-            CW_USEDEFAULT,
-            CW_USEDEFAULT,
-            0,
-            0,
-            std::ptr::null_mut(),
-            std::ptr::null_mut(),
-            hinst,
-            std::ptr::null_mut(),
+            0, class_name.as_ptr(), to_wstr("MarkdownPreview").as_ptr(),
+            WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT,
+            0, 0, std::ptr::null_mut(), std::ptr::null_mut(), hinst, std::ptr::null_mut(),
         );
 
         let mut nid: NOTIFYICONDATAW = std::mem::zeroed();
@@ -258,26 +255,21 @@ fn run_tray(port: u16) {
         nid.uCallbackMessage = WM_TRAY_CALLBACK;
         nid.hIcon = m_icon;
 
-        // Tooltip
-        let tip = to_wstr("Markdown Preview v0.2.0");
+        let tip = to_wstr("Markdown Preview");
         let tip_len = tip.len().min(128);
-        let tip_slice = &tip[..tip_len];
-        for (i, &ch) in tip_slice.iter().enumerate() {
+        for (i, &ch) in tip[..tip_len].iter().enumerate() {
             nid.szTip[i] = ch;
         }
 
         Shell_NotifyIconW(NIM_ADD, &mut nid);
         println!("  [tray] Icon created. Right-click to open/exit.");
-        println!("  Open: http://127.0.0.1:{}", port);
 
-        // Windows message loop
         let mut msg: MSG = std::mem::zeroed();
         while GetMessageW(&mut msg, std::ptr::null_mut(), 0, 0) != 0 {
             TranslateMessage(&msg);
             DispatchMessageW(&msg);
         }
 
-        // Cleanup
         Shell_NotifyIconW(NIM_DELETE, &mut nid);
         if !m_icon.is_null() {
             winapi::um::winuser::DestroyIcon(m_icon);
@@ -285,7 +277,15 @@ fn run_tray(port: u16) {
     }
 }
 
+#[cfg(feature = "tray")]
+fn to_wstr(s: &str) -> Vec<u16> {
+    use std::ffi::OsStr;
+    use std::os::windows::ffi::OsStrExt;
+    OsStr::new(s).encode_wide().chain(Some(0)).collect()
+}
+
 /// Create a custom "M" icon for the program using Windows GDI.
+#[cfg(feature = "tray")]
 fn create_m_icon() -> winapi::shared::windef::HICON {
     unsafe {
         use winapi::ctypes::c_void;
@@ -299,24 +299,16 @@ fn create_m_icon() -> winapi::shared::windef::HICON {
         let hdc_screen = GetDC(std::ptr::null_mut());
         let hdc = CreateCompatibleDC(hdc_screen);
 
-        // ── Color bitmap (32bpp BGRA) ──
         let mut bmi: BITMAPINFO = std::mem::zeroed();
         bmi.bmiHeader.biSize = std::mem::size_of::<BITMAPINFOHEADER>() as u32;
         bmi.bmiHeader.biWidth = W;
-        bmi.bmiHeader.biHeight = -H; // top-down
+        bmi.bmiHeader.biHeight = -H;
         bmi.bmiHeader.biPlanes = 1;
         bmi.bmiHeader.biBitCount = 32;
         bmi.bmiHeader.biCompression = BI_RGB;
 
         let mut color_bits: *mut c_void = std::ptr::null_mut();
-        let hbmp_color = CreateDIBSection(
-            hdc,
-            &mut bmi,
-            DIB_RGB_COLORS,
-            &mut color_bits,
-            std::ptr::null_mut(),
-            0,
-        );
+        let hbmp_color = CreateDIBSection(hdc, &mut bmi, DIB_RGB_COLORS, &mut color_bits, std::ptr::null_mut(), 0);
 
         if hbmp_color.is_null() {
             DeleteDC(hdc);
@@ -324,19 +316,16 @@ fn create_m_icon() -> winapi::shared::windef::HICON {
             return std::ptr::null_mut();
         }
 
-        // Fill pixel data: blue background + white "M" letter
         let pixels = std::slice::from_raw_parts_mut(color_bits as *mut u32, (W * H) as usize);
-        let bg = 0xFF4A6AE0u32; // Blue (#4A6AE0)
-        let fg = 0xFFFFFFFFu32; // White
+        let bg = 0xFF4A6AE0u32;
+        let fg = 0xFFFFFFFFu32;
 
         for y in 0..H {
             for x in 0..W {
                 let i = (y * W + x) as usize;
-                let is_m = is_m_pixel_32(x, y);
-                let is_border = is_rounded_corner(x, y, W, H);
-                pixels[i] = if is_border {
-                    0x00000000 // transparent
-                } else if is_m {
+                pixels[i] = if is_rounded_corner(x, y, W, H) {
+                    0x00000000
+                } else if is_m_pixel_32(x, y) {
                     fg
                 } else {
                     bg
@@ -344,7 +333,6 @@ fn create_m_icon() -> winapi::shared::windef::HICON {
             }
         }
 
-        // ── Mask bitmap (1bpp, 1 = transparent, 0 = opaque) ──
         let mask_row_bytes = ((W + 31) / 32) * 4;
         let mut mask_data = vec![0u8; (mask_row_bytes * H) as usize];
         for y in 0..H {
@@ -355,15 +343,8 @@ fn create_m_icon() -> winapi::shared::windef::HICON {
                 }
             }
         }
-        let hbmp_mask = CreateBitmap(
-            W,
-            H,
-            1,
-            1,
-            mask_data.as_ptr() as *const c_void,
-        );
+        let hbmp_mask = CreateBitmap(W, H, 1, 1, mask_data.as_ptr() as *const c_void);
 
-        // ── Create icon ──
         let mut icon_info: ICONINFO = std::mem::zeroed();
         icon_info.fIcon = 1;
         icon_info.hbmColor = hbmp_color;
@@ -371,7 +352,6 @@ fn create_m_icon() -> winapi::shared::windef::HICON {
 
         let hicon: HICON = CreateIconIndirect(&mut icon_info);
 
-        // Cleanup GDI objects
         DeleteObject(hbmp_color as *mut _);
         DeleteObject(hbmp_mask as *mut _);
         DeleteDC(hdc);
@@ -381,75 +361,34 @@ fn create_m_icon() -> winapi::shared::windef::HICON {
     }
 }
 
-/// Check if a pixel is part of the "M" letter shape (32x32 icon).
+#[cfg(feature = "tray")]
 fn is_m_pixel_32(x: i32, y: i32) -> bool {
-    // Left vertical bar (x: 5-8, y: 6-27)
-    if x >= 5 && x <= 8 && y >= 6 && y <= 27 {
-        return true;
-    }
-    // Right vertical bar (x: 23-26, y: 6-27)
-    if x >= 23 && x <= 26 && y >= 6 && y <= 27 {
-        return true;
-    }
-    // Left diagonal: from (8, 6) to (15, 27)
+    if x >= 5 && x <= 8 && y >= 6 && y <= 27 { return true; }
+    if x >= 23 && x <= 26 && y >= 6 && y <= 27 { return true; }
     if x >= 8 && x <= 15 && y >= 6 && y <= 27 {
-        let expected_y = 3 * (x - 8) + 6; // slope = 21/7 = 3
-        if (y - expected_y).abs() <= 2 {
-            return true;
-        }
+        if (y - (3 * (x - 8) + 6)).abs() <= 2 { return true; }
     }
-    // Right diagonal: from (15, 27) to (23, 6)
     if x >= 15 && x <= 23 && y >= 6 && y <= 27 {
-        let expected_y = ((-21.0 / 8.0) * (x - 15) as f64 + 27.0) as i32;
-        if (y - expected_y).abs() <= 2 {
-            return true;
-        }
+        let expected = ((-21.0 / 8.0) * (x - 15) as f64 + 27.0) as i32;
+        if (y - expected).abs() <= 2 { return true; }
     }
-    // Top horizontal bar connecting the two verticals (x: 8-23, y: 6-8)
-    if x >= 9 && x <= 22 && y >= 6 && y <= 8 {
-        return true;
-    }
+    if x >= 9 && x <= 22 && y >= 6 && y <= 8 { return true; }
     false
 }
 
-/// Check if a pixel is outside the rounded corners (for transparency).
+#[cfg(feature = "tray")]
 fn is_rounded_corner(x: i32, y: i32, w: i32, h: i32) -> bool {
-    let r = 4; // corner radius
-    // Top-left
-    if x < r && y < r {
-        let dx = x - r + 1;
-        let dy = y - r + 1;
-        return dx * dx + dy * dy > r * r;
-    }
-    // Top-right
-    if x >= w - r && y < r {
-        let dx = x - (w - r) - 1;
-        let dy = y - r + 1;
-        return dx * dx + dy * dy > r * r;
-    }
-    // Bottom-left
-    if x < r && y >= h - r {
-        let dx = x - r + 1;
-        let dy = y - (h - r) - 1;
-        return dx * dx + dy * dy > r * r;
-    }
-    // Bottom-right
-    if x >= w - r && y >= h - r {
-        let dx = x - (w - r) - 1;
-        let dy = y - (h - r) - 1;
-        return dx * dx + dy * dy > r * r;
-    }
+    let r = 4;
+    if x < r && y < r { return (x - r + 1).pow(2) + (y - r + 1).pow(2) > r * r; }
+    if x >= w - r && y < r { return (x - (w - r) - 1).pow(2) + (y - r + 1).pow(2) > r * r; }
+    if x < r && y >= h - r { return (x - r + 1).pow(2) + (y - (h - r) - 1).pow(2) > r * r; }
+    if x >= w - r && y >= h - r { return (x - (w - r) - 1).pow(2) + (y - (h - r) - 1).pow(2) > r * r; }
     false
 }
 
-fn to_wstr(s: &str) -> Vec<u16> {
-    use std::ffi::OsStr;
-    use std::os::windows::ffi::OsStrExt;
-    OsStr::new(s).encode_wide().chain(Some(0)).collect()
-}
+// ── Auto-start (Windows registry, Windows only) ──
 
-// ── Auto-start (Windows registry) ──
-
+#[cfg(feature = "tray")]
 fn exe_path() -> String {
     std::env::current_exe()
         .unwrap_or_default()
@@ -457,51 +396,30 @@ fn exe_path() -> String {
         .to_string()
 }
 
+#[cfg(feature = "tray")]
 fn install_startup() {
     let exe = exe_path();
     match std::process::Command::new("reg")
-        .args(&[
-            "add",
-            "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run",
-            "/v",
-            "MarkdownPreview",
-            "/t",
-            "REG_SZ",
-            "/d",
-            &exe,
-            "/f",
-        ])
+        .args(&["add", "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run",
+            "/v", "MarkdownPreview", "/t", "REG_SZ", "/d", &exe, "/f"])
         .status()
     {
         Ok(s) if s.success() => {
-            println!(
-                "✅ Auto-start installed: {}\n   → {}",
-                "MarkdownPreview will start on boot", exe
-            );
+            println!("✅ Auto-start installed: MarkdownPreview will start on boot\n   → {}", exe);
         }
-        _ => {
-            eprintln!("❌ Failed to install auto-start (try running as admin)");
-        }
+        _ => eprintln!("❌ Failed to install auto-start (try running as admin)"),
     }
 }
 
+#[cfg(feature = "tray")]
 fn uninstall_startup() {
     match std::process::Command::new("reg")
-        .args(&[
-            "delete",
-            "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run",
-            "/v",
-            "MarkdownPreview",
-            "/f",
-        ])
+        .args(&["delete", "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run",
+            "/v", "MarkdownPreview", "/f"])
         .status()
     {
-        Ok(s) if s.success() => {
-            println!("✅ Auto-start removed");
-        }
-        _ => {
-            eprintln!("❌ Failed to remove auto-start (may not be installed)");
-        }
+        Ok(s) if s.success() => println!("✅ Auto-start removed"),
+        _ => eprintln!("❌ Failed to remove auto-start (may not be installed)"),
     }
 }
 
@@ -532,11 +450,21 @@ fn print_banner(file_count: usize, port: u16, theme: &str) {
     println!("  ║        | .__/   |___/_|  \\___/           ║");
     println!("  ║        |_|    Markdown Preview           ║");
     println!("  ╠══════════════════════════════════════════╣");
-    println!("  ║  Version : {}                                 ║", v);
-    println!("  ║  Mode    : {}      ║", mode);
-    println!("  ║  Port    : {}                                 ║", port);
-    println!("  ║  Theme   : {}                                 ║", theme);
-    println!("  ║  Tray    : right-click icon → Exit            ║");
+    println!("  ║  Version : {:<38}║", v);
+    println!("  ║  Mode    : {:<38}║", mode);
+    println!("  ║  Port    : {:<38}║", port);
+    println!("  ║  Theme   : {:<38}║", theme);
+    #[cfg(feature = "tray")]
+    println!("  ║  Tray    : right-click icon → Exit        ║");
+    #[cfg(not(feature = "tray"))]
+    println!("  ║  Tray    : not available (headless mode)   ║");
     println!("  ╚══════════════════════════════════════════╝");
     println!();
+}
+
+fn current_timestamp() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos() as u64
 }
