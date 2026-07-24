@@ -1,6 +1,6 @@
 [package]
 name = "markdownpreview"
-version = "0.2.0"
+version = "0.3.0"
 authors = ["atomcode"]
 edition = "2021"
 description = "A fast, minimal markdown preview reader with live reload — lightweight alternative to VS Code markdown plugins. Cross-platform (Windows/Linux/macOS)."

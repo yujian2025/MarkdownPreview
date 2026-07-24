@@ -371,7 +371,7 @@ body {
 <!-- ── Content Area ── -->
 <div id="content-area">
     <div class="loading-bar" id="loadingBar"></div>
-    <div id="content" style="display:none;">__CONTENT__</div>
+    <div id="content">__CONTENT__</div>
     <div id="welcome">
         <div class="logo">📝</div>
         <h1>Markdown Preview</h1>
@@ -780,10 +780,13 @@ body {
         // Cache the server-rendered initial content so switching tabs
         // and back doesn't trigger a redundant AJAX request
         contentCache[activeId] = contentDiv.innerHTML;
+        console.log('[MP] Init activeId=' + activeId + ', content length=' + contentDiv.innerHTML.length);
         // Initial content is already server-rendered in __CONTENT__,
         // just start polling for live reload
         contentDiv.style.display = 'block';
         startPolling(activeId);
+    } else {
+        console.log('[MP] Init: no activeId (no files open)');
     }
 })();
 </script>

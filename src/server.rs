@@ -405,10 +405,9 @@ fn handle_info(request: tiny_http::Request, files: &FileMap) {
     respond_json(request, &json);
 }
 
-/// 404 handler.
+/// 404 handler (returns plain text with proper Content-Type).
 fn handle_404(request: tiny_http::Request) {
-    let response = Response::from_string("404 Not Found").with_status_code(404);
-    let _ = request.respond(response);
+    respond_text(request, "404 Not Found");
 }
 
 // ── File watcher for live reload ───────────────────────────────
