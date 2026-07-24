@@ -349,6 +349,8 @@ body {
         <span class="brand"><span class="m-logo">M</span>Markdown Preview</span>
         <button id="btnOpen" data-zh="📂 打开" data-en="📂 Open">📂 打开</button>
         <button id="btnPrint" data-zh="🖨️ 打印" data-en="🖨️ Print">🖨️ 打印</button>
+        <span style="color:var(--border);margin:0 2px;">|</span>
+        <button id="btnClear" data-zh="🗑 清空" data-en="🗑 Clear">🗑 清空</button>
     </div>
     <div class="right">
         <span class="links">
@@ -410,6 +412,7 @@ body {
     var contentCache = {};
     var lang = localStorage.getItem('mdpreview_lang') || 'zh';
     var pollTimer = null;
+    var uploading = false; // Lock to prevent concurrent uploads
 
     // ── DOM refs ──
     var tabBar = document.getElementById('tab-bar');
@@ -419,6 +422,7 @@ body {
     var langToggle = document.getElementById('langToggle');
     var btnOpen = document.getElementById('btnOpen');
     var btnPrint = document.getElementById('btnPrint');
+    var btnClear = document.getElementById('btnClear');
     var btnAddTab = document.getElementById('btnAddTab');
     var welcomeOpenBtn = document.getElementById('welcomeOpenBtn');
 
@@ -446,15 +450,21 @@ body {
 
     // ── Tab Management ──
     function renderTabs() {
-        // Remove all tabs except the add button
-        while (tabBar.children.length > 1) {
-            tabBar.removeChild(tabBar.firstChild);
-        }
+        // Completely wipe the tab bar and rebuild from scratch
+        // Save the add button, clear everything, then restore it
+        var addBtn = tabBar.querySelector('.tab-add');
+        tabBar.innerHTML = '';
+        if (addBtn) tabBar.appendChild(addBtn);
 
         var hasFiles = files.length > 0;
+        var seenIds = {}; // Track IDs to prevent duplicates
 
         // Insert tabs before the add button
         files.forEach(function(f) {
+            // Skip if duplicate ID (safety net)
+            if (seenIds[f.id]) return;
+            seenIds[f.id] = true;
+
             var tab = document.createElement('div');
             tab.className = 'tab' + (f.id === activeId ? ' active' : '');
             tab.setAttribute('data-id', f.id);
@@ -542,15 +552,20 @@ body {
     }
 
     function addTab(id, name) {
-        // Check if already exists
+        console.log('[MP] addTab called: id=' + id + ', name=' + name + ', files.length=' + files.length);
+        // Check if already exists by ID
         for (var i = 0; i < files.length; i++) {
-            if (files[i].id === id) {
-                switchTab(id);
+            if (files[i].id === id || files[i].name === name) {
+                console.log('[MP] Tab already exists: switching to ' + files[i].id);
+                switchTab(files[i].id);
                 return;
             }
         }
+        // Before pushing, verify id is valid
+        if (!id || id === 'ERROR:') { console.log('[MP] Invalid id: ' + id); return; }
         files.push({ id: id, name: name });
-        renderTabs();
+        console.log('[MP] Tab added, files now: ' + JSON.stringify(files));
+        // switchTab calls renderTabs internally
         switchTab(id);
     }
 
@@ -630,7 +645,10 @@ body {
 
     // Upload file via drag/browse
     function uploadFile(file) {
+        if (uploading) return; // Prevent concurrent uploads
+        uploading = true;
         if (!file.name.match(/\.(md|markdown|txt)$/i)) {
+            uploading = false;
             setModalStatus(lang === 'zh' ? '请选择 .md 文件' : 'Please select a .md file', 'error');
             return;
         }
@@ -644,6 +662,7 @@ body {
             })
             .then(function(r) { return r.text(); })
             .then(function(result) {
+                uploading = false;
                 if (result.indexOf('ERROR:') === 0) {
                     setModalStatus(result, 'error');
                 } else {
@@ -651,8 +670,12 @@ body {
                     addTab(result, file.name);
                 }
             })
-            .catch(function() { setModalStatus(lang === 'zh' ? '连接失败' : 'Connection lost', 'error'); });
+            .catch(function() {
+                uploading = false;
+                setModalStatus(lang === 'zh' ? '连接失败' : 'Connection lost', 'error');
+            });
         };
+        reader.onerror = function() { uploading = false; };
         reader.readAsText(file);
     }
 
@@ -674,6 +697,8 @@ body {
     });
     modalFileInput.addEventListener('change', function() {
         if (this.files && this.files[0]) uploadFile(this.files[0]);
+        // Clear value so selecting the same file again triggers change
+        this.value = '';
     });
 
     // Drag & Drop on body (global)
@@ -695,6 +720,25 @@ body {
     // Print
     btnPrint.onclick = function() {
         window.print();
+    };
+
+    // Clear all files
+    btnClear.onclick = function() {
+        if (files.length === 0) return;
+        fetch('/clear-all', { method: 'POST' })
+            .then(function() {
+                files.length = 0;
+                activeId = '';
+                versions = {};
+                contentCache = {};
+                stopPolling();
+                document.title = 'Markdown Preview';
+                // Explicitly wipe tab bar DOM before re-rendering
+                while (tabBar.children.length > 1) {
+                    tabBar.removeChild(tabBar.firstChild);
+                }
+                renderTabs();
+            });
     };
 
     // ── Keyboard shortcuts ──
@@ -733,6 +777,9 @@ body {
     renderTabs();
     if (activeId) {
         updateTitle(activeId);
+        // Cache the server-rendered initial content so switching tabs
+        // and back doesn't trigger a redundant AJAX request
+        contentCache[activeId] = contentDiv.innerHTML;
         // Initial content is already server-rendered in __CONTENT__,
         // just start polling for live reload
         contentDiv.style.display = 'block';

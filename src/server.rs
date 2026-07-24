@@ -152,6 +152,15 @@ pub fn run_server(port: u16, files: FileMap, theme: &str) {
                 // ── API: get file info (JSON) ──
                 ("GET", "/info") => handle_info(request, &f),
 
+                // ── API: clear all files ──
+                ("POST", "/clear-all") => {
+                    let mut map = f.lock().unwrap();
+                    map.clear();
+                    drop(map);
+                    println!("  → Cleared all files, reset to initial state");
+                    respond_text(request, "OK");
+                }
+
                 // ── 404 ──
                 _ => handle_404(request),
             }
@@ -336,6 +345,28 @@ fn handle_upload(
         .collect::<String>();
 
     let mut map = files.lock().unwrap();
+
+    // Check if a file with the same display name already exists
+    let replace_id = {
+        let mut found: Option<(String, u64)> = None;
+        for (existing_id, entry) in map.iter() {
+            if entry.display_name == display_name {
+                found = Some((existing_id.clone(), current_timestamp()));
+                break;
+            }
+        }
+        found
+    };
+    if let Some((rid, version)) = replace_id {
+        let entry = map.get_mut(&rid).unwrap();
+        entry.content = content;
+        entry.version = version;
+        drop(map);
+        println!("  → Replaced: {} (id: {})", display_name, rid);
+        respond_text(request, &rid);
+        return;
+    }
+
     let file_id = unique_file_id(&base_id, &map);
 
     let entry = FileEntry {
